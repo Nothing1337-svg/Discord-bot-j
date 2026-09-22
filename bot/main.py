@@ -1,6 +1,8 @@
 import asyncio
 import io
 import logging
+import os
+import time
 from typing import Literal
 
 import aiohttp
@@ -8,11 +10,13 @@ import discord
 from discord import app_commands
 from discord.ext import tasks
 
+from .accounts import Accounts
 from .banner import render
 from .config import ROOT, Config
 from .i18n import tr
+from .network import tls_context
 from .notifications import Notifier
-from .providers import Providers, PublicResolver, normalize
+from .providers import PLATFORMS, Providers, PublicResolver
 from .store import Store
 from .voice import BannerSchedule, voice_count
 
@@ -20,11 +24,11 @@ log = logging.getLogger(__name__)
 
 
 class VideoBot(discord.Client):
-    def __init__(self, config):
+    def __init__(self, config, connector=None):
         intents = discord.Intents.none()
         intents.guilds = True
         intents.voice_states = True
-        super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
+        super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none(), connector=connector)
         self.config = config
         self.tree = app_commands.CommandTree(self)
         self.scope = discord.Object(id=config.guild_id)
@@ -39,9 +43,10 @@ class VideoBot(discord.Client):
         (ROOT / "data").mkdir(exist_ok=True)
         self.store = Store(ROOT / "data" / "bot.sqlite3")
         self.session = aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(resolver=PublicResolver()),
+            connector=aiohttp.TCPConnector(resolver=PublicResolver(), ssl=tls_context()),
             timeout=aiohttp.ClientTimeout(total=25), headers={"User-Agent": "Discord-bot-j/1.0"})
-        self.providers = Providers(self.session)
+        self.providers = Providers(self.session, Accounts(ROOT / os.getenv("ACCOUNTS_FILE", "accounts.json")),
+                                   self.config.api_max_pages)
         self.notifier = Notifier(self.store, self.providers, self.send_video,
                                  self.config.max_send, self.config.poll_seconds)
         await self.tree.sync(guild=self.scope)
@@ -134,8 +139,9 @@ class VideoBot(discord.Client):
                 return self.tree.command(name=name, description=description, guild=self.scope)(func)
             return decorate
 
-        @admin_command("subscribe", "Add YouTube / Twitch / RSS subscription · Добавить подписку")
-        async def subscribe(interaction: discord.Interaction, platform: Literal["youtube", "twitch", "rss"],
+        @admin_command("subscribe", "Subscribe to new videos · Подписаться на новые видео")
+        async def subscribe(interaction: discord.Interaction,
+                            platform: Literal["youtube", "twitch", "tiktok", "instagram", "vimeo", "peertube", "rss"],
                             source: str, channel: discord.TextChannel):
             await interaction.response.defer(ephemeral=True)
             if channel.guild.id != self.config.guild_id:
@@ -143,10 +149,11 @@ class VideoBot(discord.Client):
             permissions = channel.permissions_for(channel.guild.me)
             if not (permissions.view_channel and permissions.send_messages and permissions.embed_links):
                 raise ValueError("Missing destination permissions")
-            source = normalize(platform, source)
+            source = await self.providers.resolve(platform, source)
             async with self.notifier.lock:
+                started_at = time.time()
                 baseline = await self.providers.fetch(platform, source)
-                self.store.add(platform, source, channel.id, baseline)
+                self.store.add(platform, source, channel.id, baseline, created_at=started_at)
             await interaction.followup.send(self.text("added"), ephemeral=True)
 
         @admin_command("unsubscribe", "Remove subscription by ID · Удалить подписку")
@@ -173,16 +180,26 @@ class VideoBot(discord.Client):
         async def check(interaction: discord.Interaction):
             await interaction.response.defer(ephemeral=True)
             # Background work can exceed the interaction token lifetime for many subscriptions.
-            await interaction.followup.send(self.text("working"), ephemeral=True)
+            await interaction.followup.send(self.text("checking"), ephemeral=True)
             await self.notifier.poll()
 
         @admin_command("status", "Show bot status · Состояние бота")
         async def status(interaction: discord.Interaction):
+            sources = self.store.all()
+            limits = sum(bool(self.providers.windows.get((s.kind, s.source))) for s in sources)
+            health = self.text("working") if self.poll_loop.is_running() else self.text("stopped")
             await interaction.response.send_message(
-                f"{self.text('working')}\n{self.text('sources')}: {len(self.store.all())}\n"
+                f"{health}\n{self.text('sources')}: {len(sources)}\n"
                 f"{self.text('failed')}: {len(self.notifier.failures)}\n"
+                f"{self.text('pending')}: {self.store.pending_count()}\n"
+                f"{self.text('window')}: {limits}\n"
                 f"Voice: {voice_count(interaction.guild, self.config.exclude_afk)}\n"
                 f"Banner: enabled={self.config.banner_enabled}, blocked={self.banner_blocked}", ephemeral=True)
+
+        @admin_command("platforms", "Supported platforms and setup · Платформы и настройка")
+        async def platforms(interaction: discord.Interaction):
+            await interaction.response.send_message(
+                ", ".join(PLATFORMS) + "\n" + self.text("platform_help"), ephemeral=True)
 
         @admin_command("banner_preview", "Preview voice banner · Предпросмотр баннера")
         async def preview(interaction: discord.Interaction):
@@ -208,7 +225,15 @@ class VideoBot(discord.Client):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     config = Config.load()
-    VideoBot(config).run(config.token, log_handler=None)
+    async def run():
+        connector = aiohttp.TCPConnector(ssl=tls_context())
+        async with VideoBot(config, connector=connector) as bot:
+            await bot.start(config.token)
+
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

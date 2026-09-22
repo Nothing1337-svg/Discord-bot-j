@@ -17,10 +17,9 @@ def test_unsafe_urls(url):
 def test_normalization():
     assert normalize("twitch", "https://www.twitch.tv/Example/") == "example"
     assert normalize("youtube", "https://www.youtube.com/channel/UC" + "a" * 22) == "UC" + "a" * 22
+    assert normalize("youtube", "https://www.youtube.com/@creator") == "@creator"
     with pytest.raises(ValueError):
-        normalize("youtube", "@creator")
-    with pytest.raises(ValueError):
-        normalize("tiktok", "creator")
+        normalize("unknown", "creator")
 
 
 def test_atom_unicode_and_order():

@@ -7,6 +7,7 @@ discord-bot-j/
 ├── .gitignore
 ├── Dockerfile
 ├── README.md
+├── accounts.example.json
 ├── assets/
 │   ├── background.png
 │   └── fonts/
@@ -17,10 +18,14 @@ discord-bot-j/
 │       └── README.md
 ├── bot/
 │   ├── __init__.py
+│   ├── accounts.py
+│   ├── adapters.py
 │   ├── banner.py
 │   ├── config.py
+│   ├── doctor.py
 │   ├── i18n.py
 │   ├── main.py
+│   ├── network.py
 │   ├── notifications.py
 │   ├── preview.py
 │   ├── providers.py
@@ -32,6 +37,7 @@ discord-bot-j/
 │   └── .gitkeep
 ├── docs/
 │   ├── alternatives.md
+│   ├── platforms.md
 │   ├── structure.txt
 │   └── testing.md
 ├── previews/
@@ -42,6 +48,7 @@ discord-bot-j/
 ├── requirements-dev.txt
 ├── requirements.txt
 └── tests/
+    ├── test_adapters.py
     ├── test_banner.py
     ├── test_config.py
     ├── test_discord.py

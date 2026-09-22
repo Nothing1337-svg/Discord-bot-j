@@ -5,5 +5,11 @@ services:
     restart: unless-stopped
     volumes:
       - bot-data:/app/data
+      - type: bind
+        source: ./accounts.json
+        target: /app/accounts.json
+        read_only: true
+        bind:
+          create_host_path: false
 volumes:
   bot-data:

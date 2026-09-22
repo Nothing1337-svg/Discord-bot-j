@@ -125,3 +125,47 @@ async def test_discord_outage_does_not_stop_collecting_videos(store):
     await notifier.poll()
     assert not notifier.failures
     assert store.contains(sid, 'first') and store.contains(sid, 'second')
+
+
+async def test_upstream_retry_after_is_respected(store):
+    from bot.providers import UpstreamError
+    store.add('rss', 'https://example.org/feed', 1, [])
+    providers = AsyncMock()
+    providers.fetch.side_effect = UpstreamError(429, retry_after=7200)
+    now = [0]
+    notifier = Notifier(store, providers, AsyncMock(), clock=lambda: now[0])
+    await notifier.poll()
+    now[0] = 3600
+    await notifier.poll()
+    assert providers.fetch.await_count == 1
+    now[0] = 7200
+    await notifier.poll()
+    assert providers.fetch.await_count == 2
+
+
+def test_old_items_that_enter_feed_window_are_not_sent(store):
+    import time
+    sid = store.add('rss', 'https://example.org/feed', 1, [])
+    store.enqueue(sid, [Video('old', 'Old', 'https://example.org/old', time.time()-3600),
+                       Video('new', 'New', 'https://example.org/new', time.time()+1)])
+    assert [v.id for v in store.pending(sid, 5)] == ['new']
+
+
+def test_existing_database_migration_preserves_history(tmp_path):
+    path = tmp_path / 'legacy.sqlite3'
+    db = sqlite3.connect(path)
+    db.executescript('''
+    CREATE TABLE subscriptions(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,
+        source TEXT NOT NULL, channel_id INTEGER NOT NULL, UNIQUE(kind,source,channel_id));
+    INSERT INTO subscriptions VALUES(1,'rss','https://example.org/feed',1);
+    CREATE TABLE seen(subscription_id INTEGER REFERENCES subscriptions(id) ON DELETE CASCADE,
+        video_id TEXT NOT NULL, PRIMARY KEY(subscription_id,video_id));
+    INSERT INTO seen VALUES(1,'sent');
+    ''')
+    db.close()
+    migrated = Store(path)
+    assert migrated.all()[0].source == 'https://example.org/feed'
+    assert migrated.contains(1, 'sent')
+    migrated.enqueue(1, [video('new')])
+    assert len(migrated.pending(1, 5)) == 1
+    migrated.close()

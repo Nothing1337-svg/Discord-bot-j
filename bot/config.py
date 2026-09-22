@@ -33,6 +33,7 @@ class Config:
     cooldown: int
     background: Path
     exclude_afk: bool
+    api_max_pages: int = 3
 
     @classmethod
     def load(cls):
@@ -43,7 +44,10 @@ class Config:
         language = os.getenv("LANGUAGE", "ru")
         if language not in {"ru", "en"}:
             raise ValueError("LANGUAGE must be ru or en")
+        pages = number("API_MAX_PAGES", 3)
+        if pages > 10:
+            raise ValueError("API_MAX_PAGES must be between 1 and 10")
         return cls(token, number("GUILD_ID", 0), language, number("POLL_SECONDS", 120, 30),
                    number("MAX_SEND_PER_POLL", 5), boolean("BANNER_ENABLED"),
                    number("BANNER_DEBOUNCE_SECONDS", 5), number("BANNER_COOLDOWN_SECONDS", 60, 30),
-                   ROOT / os.getenv("BACKGROUND", "assets/background.png"), boolean("EXCLUDE_AFK", True))
+                   ROOT / os.getenv("BACKGROUND", "assets/background.png"), boolean("EXCLUDE_AFK", True), pages)

@@ -1,4 +1,5 @@
 import asyncio
+import calendar
 import ipaddress
 import json
 import os
@@ -6,12 +7,29 @@ import re
 import socket
 import time
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from datetime import datetime
+from urllib.parse import unquote, urlsplit
 
 import aiohttp
 import feedparser
 
 MAX_BODY = 2 * 1024 * 1024
+PLATFORMS = ("youtube", "twitch", "tiktok", "instagram", "vimeo", "peertube", "rss")
+
+
+class UpstreamError(ValueError):
+    def __init__(self, status, retry_after=0):
+        self.status = status
+        self.retry_after = retry_after
+        super().__init__(f"Upstream HTTP {status}")
+
+
+def timestamp(value):
+    if not value:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return datetime.fromisoformat(value).timestamp()
 
 
 @dataclass(frozen=True)
@@ -19,6 +37,7 @@ class Video:
     id: str
     title: str
     url: str
+    published_at: float | None = None
 
 
 def public_url(url):
@@ -51,10 +70,17 @@ class PublicResolver(aiohttp.resolver.DefaultResolver):
 def normalize(kind, source):
     source = source.strip()
     if kind == "youtube":
-        source = source.removeprefix("https://www.youtube.com/channel/").removeprefix(
-            "https://youtube.com/channel/").rstrip("/")
-        if not re.fullmatch(r"UC[\w-]{22}", source, flags=re.ASCII):
-            raise ValueError("YouTube needs a UC channel ID (24 characters), not @handle")
+        if source.startswith("https://"):
+            public_url(source)
+            parts = urlsplit(source)
+            if parts.hostname not in {"youtube.com", "www.youtube.com"}:
+                raise ValueError("Use a youtube.com channel URL")
+            source = unquote(parts.path).strip("/")
+            source = source.removeprefix("channel/")
+            for tab in ("/videos", "/shorts", "/streams", "/featured"):
+                source = source.removesuffix(tab)
+        if not re.fullmatch(r"UC[A-Za-z0-9_-]{22}|@[\w.\-]{1,30}", source):
+            raise ValueError("YouTube needs a UC channel ID or @handle / channel URL")
     elif kind == "twitch":
         source = source.removeprefix("https://www.twitch.tv/").removeprefix("https://twitch.tv/")
         source = source.rstrip("/").lower()
@@ -62,8 +88,18 @@ def normalize(kind, source):
             raise ValueError("Twitch needs a channel login")
     elif kind == "rss":
         public_url(source)
+    elif kind in {"tiktok", "instagram", "vimeo"}:
+        if not re.fullmatch(r"[a-z0-9_-]{1,48}", source):
+            raise ValueError("Use an account alias from accounts.json, never an access token")
+    elif kind == "peertube":
+        public_url(source)
+        parts = urlsplit(source)
+        if parts.query or parts.fragment or not re.fullmatch(r"/c/[\w.@-]+/?|/video-channels/[\w.@-]+/?", parts.path):
+            raise ValueError("Use https://instance/c/channel or /video-channels/channel")
+        handle = parts.path.rstrip("/").rsplit("/", 1)[1]
+        source = f"https://{parts.netloc.lower()}/video-channels/{handle}"
     else:
-        raise ValueError("Supported providers: youtube, twitch, rss")
+        raise ValueError("Unsupported provider")
     return source
 
 
@@ -78,7 +114,9 @@ def parse_feed(body):
             public_url(url)
         except ValueError:
             continue
-        result.append(Video(str(entry.get("id", url)), str(entry.get("title", "Video")), url))
+        published = entry.get("published_parsed")
+        result.append(Video(str(entry.get("id", url)), str(entry.get("title", "Video")), url,
+                            calendar.timegm(published) if published else None))
     if parsed.entries and not result:
         raise ValueError("Feed contains no usable public HTTPS links")
     # Most RSS/Atom feeds and YouTube return newest first.
@@ -86,17 +124,41 @@ def parse_feed(body):
 
 
 class Providers:
-    def __init__(self, session):
+    def __init__(self, session, accounts=None, max_pages=3):
         self.session = session
         self.token = None
         self.expires = 0
+        self.accounts = accounts
+        self.max_pages = max_pages
+        self.windows = {}  # Sources whose latest fetch reached the configured page limit.
+
+    async def json(self, method, url, **kwargs):
+        return json.loads(await self.request(method, url, **kwargs))
+
+    async def resolve(self, kind, source):
+        source = normalize(kind, source)
+        if kind == "youtube" and source.startswith("@"):
+            key = os.getenv("YOUTUBE_API_KEY", "")
+            if not key:
+                raise ValueError("Set YOUTUBE_API_KEY to resolve @handles, or use the UC channel ID")
+            data = await self.json("GET", "https://www.googleapis.com/youtube/v3/channels",
+                                   params={"part": "id", "forHandle": source, "key": key})
+            if not data.get("items"):
+                raise ValueError("YouTube channel not found")
+            return normalize("youtube", data["items"][0]["id"])
+        return source
 
     async def request(self, method, url, **kwargs):
         public_url(url)
         # Redirects are disabled: no redirect to internal endpoints or credential forwarding.
         async with self.session.request(method, url, allow_redirects=False, **kwargs) as response:
             if response.status != 200:
-                raise ValueError(f"Upstream HTTP {response.status}")
+                try:
+                    retry = max(0, float(response.headers.get("Retry-After", "0")),
+                                float(response.headers.get("Ratelimit-Reset", "0")) - time.time())
+                except (ValueError, TypeError):
+                    retry = 0
+                raise UpstreamError(response.status, min(retry, 86400))
             body = bytearray()
             async for chunk in response.content.iter_chunked(65536):
                 body.extend(chunk)
@@ -117,8 +179,12 @@ class Providers:
         return {"Client-ID": client_id, "Authorization": f"Bearer {self.token}"}
 
     async def fetch(self, kind, source):
-        if kind not in {"youtube", "rss", "twitch"}:
+        if kind not in PLATFORMS:
             raise ValueError("Unsupported provider")
+        self.windows[(kind, source)] = False
+        if kind in {"tiktok", "instagram", "vimeo", "peertube"}:
+            from .adapters import fetch_extended
+            return await fetch_extended(self, kind, source)
         if kind in {"youtube", "rss"}:
             url = f"https://www.youtube.com/feeds/videos.xml?channel_id={source}" if kind == "youtube" else source
             body = await self.request("GET", url)
@@ -129,9 +195,21 @@ class Providers:
                                                  params={"login": source}, headers=headers))
             if not user["data"]:
                 raise ValueError("Twitch channel not found")
-            data = json.loads(await self.request("GET", "https://api.twitch.tv/helix/videos", headers=headers,
-                                                 params={"user_id": user["data"][0]["id"], "first": 100}))
-        except ValueError:
-            self.expires = 0
+            videos = []
+            cursor = None
+            for _ in range(self.max_pages):
+                params = {"user_id": user["data"][0]["id"], "first": 100, "sort": "time"}
+                if cursor:
+                    params["after"] = cursor
+                data = await self.json("GET", "https://api.twitch.tv/helix/videos", headers=headers, params=params)
+                videos.extend(Video(v["id"], v["title"], public_url(v["url"]), timestamp(v.get("published_at")))
+                              for v in data["data"])
+                cursor = data.get("pagination", {}).get("cursor")
+                if not cursor:
+                    break
+            self.windows[(kind, source)] = bool(cursor)
+        except UpstreamError as exc:
+            if exc.status == 401:
+                self.expires = 0
             raise
-        return [Video(v["id"], v["title"], public_url(v["url"])) for v in reversed(data["data"])]
+        return list(reversed(videos))

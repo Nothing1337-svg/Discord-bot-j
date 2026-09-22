@@ -27,7 +27,7 @@ class Notifier:
 
     def failed(self, failures, sub_id, stage, exc):
         count = failures.get(sub_id, (0, 0))[0] + 1
-        delay = min(3600, self.interval * 2 ** min(count, 5))
+        delay = max(min(3600, self.interval * 2 ** min(count, 5)), getattr(exc, "retry_after", 0))
         failures[sub_id] = (count, self.clock() + delay)
         # Never log source URLs, headers, tokens or upstream response bodies.
         log.warning('Subscription %s %s failed (%s); retry in %ss', sub_id, stage, type(exc).__name__, delay)

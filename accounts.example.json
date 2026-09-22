@@ -1,0 +1,17 @@
+{
+  "my_tiktok": {
+    "platform": "tiktok",
+    "token_env": "TIKTOK_CREATOR_TOKEN"
+  },
+  "my_instagram": {
+    "platform": "instagram",
+    "token_env": "INSTAGRAM_CREATOR_TOKEN",
+    "user_id": "",
+    "api_version": ""
+  },
+  "my_vimeo": {
+    "platform": "vimeo",
+    "token_env": "VIMEO_TOKEN",
+    "user_id": ""
+  }
+}
