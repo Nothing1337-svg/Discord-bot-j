@@ -1,0 +1,49 @@
+discord-bot-j/
+├── .dockerignore
+├── .env.example
+├── .github/
+│   └── workflows/
+│       └── tests.yml
+├── .gitignore
+├── Dockerfile
+├── README.md
+├── assets/
+│   ├── background.png
+│   └── fonts/
+│       ├── NotoEmoji-Regular.ttf
+│       ├── NotoSans-Bold.ttf
+│       ├── NotoSans-Regular.ttf
+│       ├── OFL.txt
+│       └── README.md
+├── bot/
+│   ├── __init__.py
+│   ├── banner.py
+│   ├── config.py
+│   ├── i18n.py
+│   ├── main.py
+│   ├── notifications.py
+│   ├── preview.py
+│   ├── providers.py
+│   ├── store.py
+│   └── voice.py
+├── compose.yaml
+├── constraints.txt
+├── data/
+│   └── .gitkeep
+├── docs/
+│   ├── alternatives.md
+│   ├── structure.txt
+│   └── testing.md
+├── previews/
+│   ├── banner-en.png
+│   ├── banner-ru.png
+│   └── banner-unicode.png
+├── pyproject.toml
+├── requirements-dev.txt
+├── requirements.txt
+└── tests/
+    ├── test_banner.py
+    ├── test_config.py
+    ├── test_discord.py
+    ├── test_notifications.py
+    └── test_providers.py

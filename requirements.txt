@@ -1,0 +1,7 @@
+discord.py>=2.6,<3
+aiohttp>=3.12,<4
+feedparser>=6.0.11,<7
+Pillow>=11.3,<13
+python-dotenv>=1.1,<2
+fonttools>=4.59,<5
+regex>=2025.7
