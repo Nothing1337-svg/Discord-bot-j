@@ -101,7 +101,7 @@ class VideoBot(discord.Client):
     @tasks.loop(seconds=1)
     async def banner_loop(self):
         guild = self.guild()
-        if not guild or self.banner_blocked:
+        if not guild or guild.unavailable or not guild.me or self.banner_blocked:
             return
         if "BANNER" not in guild.features or not guild.me.guild_permissions.manage_guild:
             log.warning("Banner disabled: BANNER feature and Manage Server are required. Restart after fixing.")
@@ -154,7 +154,7 @@ class VideoBot(discord.Client):
             await interaction.response.defer(ephemeral=True)
             async with self.notifier.lock:
                 removed = self.store.remove(subscription_id)
-                self.notifier.failures.pop(subscription_id, None)
+                self.notifier.forget(subscription_id)
             await interaction.followup.send(self.text("removed" if removed else "missing"), ephemeral=True)
 
         @admin_command("subscriptions", "List subscriptions · Список подписок")

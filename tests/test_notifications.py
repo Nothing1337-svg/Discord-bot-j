@@ -91,3 +91,37 @@ async def test_provider_failure_keeps_subscription(store):
     assert len(store.all()) == 1
     assert len(notifier.failures) == 1
     send.assert_not_awaited()
+
+
+async def test_saved_queue_delivers_when_source_is_down(store):
+    sid = store.add('rss', 'https://example.org/feed', 1, [])
+    store.enqueue(sid, [video('saved')])
+    providers = AsyncMock()
+    providers.fetch.side_effect = TimeoutError()
+    send = AsyncMock()
+    notifier = Notifier(store, providers, send)
+    await notifier.poll()
+    send.assert_awaited_once()
+    assert store.contains(sid, 'saved')
+    assert sid in notifier.failures  # source remains unhealthy, even though delivery succeeded
+
+
+async def test_discord_outage_does_not_stop_collecting_videos(store):
+    sid = store.add('rss', 'https://example.org/feed', 1, [])
+    providers = AsyncMock()
+    providers.fetch.return_value = [video('first')]
+    send = AsyncMock(side_effect=RuntimeError())
+    now = [0]
+    notifier = Notifier(store, providers, send, clock=lambda: now[0])
+    await notifier.poll()
+    providers.fetch.return_value = [video('second')]
+    now[0] = 120
+    await notifier.poll()
+    assert [v.id for v in store.pending(sid, 10)] == ['first', 'second']
+    assert send.await_count == 1  # Discord delivery cooldown remains active
+    providers.fetch.return_value = []
+    send.side_effect = None
+    now[0] = 240
+    await notifier.poll()
+    assert not notifier.failures
+    assert store.contains(sid, 'first') and store.contains(sid, 'second')

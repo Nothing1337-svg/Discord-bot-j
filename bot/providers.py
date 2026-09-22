@@ -22,6 +22,8 @@ class Video:
 
 
 def public_url(url):
+    if len(url) > 2000 or any(char.isspace() or ord(char) < 32 for char in url):
+        raise ValueError("URL must fit Discord's 2000-character limit and contain no whitespace")
     parts = urlsplit(url)
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
         raise ValueError("Use a public HTTPS URL without credentials")
@@ -77,6 +79,8 @@ def parse_feed(body):
         except ValueError:
             continue
         result.append(Video(str(entry.get("id", url)), str(entry.get("title", "Video")), url))
+    if parsed.entries and not result:
+        raise ValueError("Feed contains no usable public HTTPS links")
     # Most RSS/Atom feeds and YouTube return newest first.
     return list(reversed(result))
 
@@ -113,6 +117,8 @@ class Providers:
         return {"Client-ID": client_id, "Authorization": f"Bearer {self.token}"}
 
     async def fetch(self, kind, source):
+        if kind not in {"youtube", "rss", "twitch"}:
+            raise ValueError("Unsupported provider")
         if kind in {"youtube", "rss"}:
             url = f"https://www.youtube.com/feeds/videos.xml?channel_id={source}" if kind == "youtube" else source
             body = await self.request("GET", url)

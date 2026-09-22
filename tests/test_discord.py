@@ -21,6 +21,7 @@ async def test_delivery_and_disabled_mentions():
     channel.permissions_for.return_value = NS(view_channel=True, send_messages=True, embed_links=True)
     channel.send = AsyncMock()
     guild = MagicMock()
+    guild.unavailable = False
     guild.get_channel.return_value = channel
     bot.guild = lambda: guild
     await bot.send_video(Subscription(1, "rss", "https://example.org/feed", 123),
@@ -37,6 +38,7 @@ async def test_missing_channel_permission_does_not_send():
     channel.permissions_for.return_value = NS(view_channel=True, send_messages=False, embed_links=True)
     channel.send = AsyncMock()
     guild = MagicMock()
+    guild.unavailable = False
     guild.get_channel.return_value = channel
     bot.guild = lambda: guild
     with pytest.raises(ValueError, match="permissions"):
@@ -48,6 +50,7 @@ async def test_missing_channel_permission_does_not_send():
 async def test_missing_server_capability_disables_banner_only():
     bot = client()
     guild = MagicMock()
+    guild.unavailable = False
     guild.features = []
     guild.edit = AsyncMock()
     bot.guild = lambda: guild
@@ -55,3 +58,17 @@ async def test_missing_server_capability_disables_banner_only():
     assert bot.banner_blocked
     guild.edit.assert_not_awaited()
     assert len(bot.tree.get_commands(guild=bot.scope)) == 6
+
+
+async def test_unavailable_guild_does_not_disable_banner_or_overwrite_counter():
+    bot = client()
+    guild = MagicMock()
+    guild.unavailable = True
+    guild.features = []
+    guild.edit = AsyncMock()
+    bot.guild = lambda: guild
+    bot.schedule.observe(12)
+    await bot.banner_loop.coro(bot)
+    assert not bot.banner_blocked
+    assert bot.schedule.value == 12
+    guild.edit.assert_not_awaited()

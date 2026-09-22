@@ -41,6 +41,18 @@ def test_rss_and_bad_feed():
         parse_feed(b"<html>not RSS</html>")
 
 
+@pytest.mark.parametrize("url", ["https://example.org/" + "a" * 2000, "https://example.org/a\nb"])
+def test_unsendable_url_is_rejected(url):
+    with pytest.raises(ValueError):
+        public_url(url)
+
+
+def test_feed_with_no_usable_links_is_not_accepted_as_empty():
+    with pytest.raises(ValueError, match="no usable"):
+        parse_feed(b'<rss version="2.0"><channel><item><guid>1</guid>'
+                   b'<link>http://example.org/video</link></item></channel></rss>')
+
+
 async def test_twitch_token_cache(monkeypatch):
     monkeypatch.setenv("TWITCH_CLIENT_ID", "test-client")
     monkeypatch.setenv("TWITCH_CLIENT_SECRET", "test-secret")
