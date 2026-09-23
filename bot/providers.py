@@ -2,12 +2,14 @@ import asyncio
 import calendar
 import ipaddress
 import json
+import math
 import os
 import re
 import socket
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from urllib.parse import unquote, urlsplit
 
 import aiohttp
@@ -22,6 +24,23 @@ class UpstreamError(ValueError):
         self.status = status
         self.retry_after = retry_after
         super().__init__(f"Upstream HTTP {status}")
+
+
+def retry_delay(headers, now):
+    delays = [0.0]
+    value = headers.get("Retry-After", "0")
+    try:
+        delays.append(float(value))
+    except (ValueError, TypeError):
+        try:
+            delays.append(parsedate_to_datetime(value).timestamp() - now)
+        except (ValueError, TypeError, OverflowError):
+            pass
+    try:
+        delays.append(float(headers.get("Ratelimit-Reset", "0")) - now)
+    except (ValueError, TypeError):
+        pass
+    return min(86400, max(delay for delay in delays if math.isfinite(delay)))
 
 
 def timestamp(value):
@@ -115,7 +134,7 @@ def parse_feed(body):
         except ValueError:
             continue
         published = entry.get("published_parsed")
-        result.append(Video(str(entry.get("id", url)), str(entry.get("title", "Video")), url,
+        result.append(Video(str(entry.get("id") or url), str(entry.get("title") or "Video"), url,
                             calendar.timegm(published) if published else None))
     if parsed.entries and not result:
         raise ValueError("Feed contains no usable public HTTPS links")
@@ -153,12 +172,7 @@ class Providers:
         # Redirects are disabled: no redirect to internal endpoints or credential forwarding.
         async with self.session.request(method, url, allow_redirects=False, **kwargs) as response:
             if response.status != 200:
-                try:
-                    retry = max(0, float(response.headers.get("Retry-After", "0")),
-                                float(response.headers.get("Ratelimit-Reset", "0")) - time.time())
-                except (ValueError, TypeError):
-                    retry = 0
-                raise UpstreamError(response.status, min(retry, 86400))
+                raise UpstreamError(response.status, retry_delay(response.headers, time.time()))
             body = bytearray()
             async for chunk in response.content.iter_chunked(65536):
                 body.extend(chunk)

@@ -28,6 +28,7 @@ discord-bot-j/
 │   ├── network.py
 │   ├── notifications.py
 │   ├── preview.py
+│   ├── process_lock.py
 │   ├── providers.py
 │   ├── store.py
 │   └── voice.py
@@ -37,6 +38,7 @@ discord-bot-j/
 │   └── .gitkeep
 ├── docs/
 │   ├── alternatives.md
+│   ├── dependency-audit.json
 │   ├── platforms.md
 │   ├── structure.txt
 │   └── testing.md
@@ -53,4 +55,5 @@ discord-bot-j/
     ├── test_config.py
     ├── test_discord.py
     ├── test_notifications.py
-    └── test_providers.py
+    ├── test_providers.py
+    └── test_regressions.py

@@ -8,6 +8,7 @@ TEXT = {
            "checking": "Проверка запрошена. Результат и очередь доступны в /status.",
            "pending": "Ссылок в очереди", "window": "Достигнут лимит страниц API (ограниченное окно)",
            "stopped": "Проверка источников остановлена — проверьте журнал и перезапустите бота",
+           "poll_error": "Ошибка базы/ввода-вывода. Проверьте журнал; повтор в следующем цикле.",
            "platform_help": "YouTube: UC-ID / @handle (для handle нужен API key). Twitch: логин. "
                             "PeerTube: URL канала. RSS: URL ленты. TikTok, Instagram, Vimeo: "
                             "настроенный локально alias из accounts.json. Токены в Discord не вводите. "
@@ -21,6 +22,7 @@ TEXT = {
            "checking": "Check requested. See /status for results and pending deliveries.",
            "pending": "Pending links", "window": "API page limit reached (bounded history)",
            "stopped": "Polling stopped — check logs and restart the bot",
+           "poll_error": "Database/I/O failure. Check logs; retry on next cycle.",
            "platform_help": "YouTube: UC-ID / @handle (API key required for handles). Twitch: login. "
                             "PeerTube: channel URL. RSS: feed URL. TikTok, Instagram, Vimeo: "
                             "local accounts.json alias. Never enter tokens in Discord. "

@@ -1,3 +1,4 @@
+import math
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -63,8 +64,9 @@ class Store:
             return
         with self.db:
             for video in videos:
-                # Older unseen items can surface when the feed window changes. Never backfill them.
-                if video.published_at is not None and video.published_at <= row[0]:
+                # Older unseen items can surface when the feed window changes. Apply the start boundary.
+                # APIs often truncate publication time to whole seconds. Keep the boundary second.
+                if video.published_at is not None and video.published_at < math.floor(row[0]):
                     continue
                 if not self.contains(sub_id, video.id):
                     self.db.execute("INSERT OR IGNORE INTO pending(subscription_id,video_id,title,url) "

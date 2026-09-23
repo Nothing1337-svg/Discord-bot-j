@@ -2,7 +2,10 @@ import asyncio
 import io
 import logging
 import os
+import signal
+import sqlite3
 import time
+from functools import wraps
 from typing import Literal
 
 import aiohttp
@@ -16,6 +19,7 @@ from .config import ROOT, Config
 from .i18n import tr
 from .network import tls_context
 from .notifications import Notifier
+from .process_lock import ProcessLock
 from .providers import PLATFORMS, Providers, PublicResolver
 from .store import Store
 from .voice import BannerSchedule, voice_count
@@ -34,6 +38,10 @@ class VideoBot(discord.Client):
         self.scope = discord.Object(id=config.guild_id)
         self.schedule = BannerSchedule(config.debounce, config.cooldown)
         self.banner_blocked = False
+        self.poll_error = False
+        self._stopping = False
+        self._command_tasks = set()
+        self.process_lock = None
         self.register_commands()
 
     def text(self, key):
@@ -41,6 +49,7 @@ class VideoBot(discord.Client):
 
     async def setup_hook(self):
         (ROOT / "data").mkdir(exist_ok=True)
+        self.process_lock = ProcessLock(ROOT / "data" / "bot.lock")
         self.store = Store(ROOT / "data" / "bot.sqlite3")
         self.session = aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(resolver=PublicResolver(), ssl=tls_context()),
@@ -56,16 +65,29 @@ class VideoBot(discord.Client):
             self.banner_loop.start()
 
     async def close(self):
-        running = [loop.get_task() for loop in (self.poll_loop, self.banner_loop) if loop.is_running()]
+        self._stopping = True
+        running = {loop.get_task() for loop in (self.poll_loop, self.banner_loop) if loop.is_running()}
+        running.update(self._command_tasks)
+        running.discard(asyncio.current_task())
         self.poll_loop.cancel()
         self.banner_loop.cancel()
+        for task in running:
+            task.cancel()
         if running:
             await asyncio.gather(*running, return_exceptions=True)
-        if hasattr(self, "session"):
-            await self.session.close()
-        if hasattr(self, "store"):
-            self.store.close()
-        await super().close()
+        try:
+            if hasattr(self, "session"):
+                await self.session.close()
+        finally:
+            try:
+                if hasattr(self, "store"):
+                    self.store.close()
+            finally:
+                try:
+                    await super().close()
+                finally:
+                    if self.process_lock:
+                        self.process_lock.close()
 
     def guild(self):
         return self.get_guild(self.config.guild_id)
@@ -97,7 +119,15 @@ class VideoBot(discord.Client):
 
     @tasks.loop(seconds=120)
     async def poll_loop(self):
-        await self.notifier.poll()
+        await self.poll_once()
+
+    async def poll_once(self):
+        try:
+            await self.notifier.poll()
+            self.poll_error = False
+        except (sqlite3.Error, OSError) as exc:
+            self.poll_error = True
+            log.error("Poll failed (%s); will retry on next cycle", type(exc).__name__)
 
     @poll_loop.before_loop
     async def before_poll(self):
@@ -134,9 +164,19 @@ class VideoBot(discord.Client):
     def register_commands(self):
         def admin_command(name, description):
             def decorate(func):
-                func = app_commands.checks.has_permissions(manage_guild=True)(func)
-                func = app_commands.default_permissions(manage_guild=True)(func)
-                return self.tree.command(name=name, description=description, guild=self.scope)(func)
+                @wraps(func)
+                async def tracked(*args, **kwargs):
+                    if self._stopping:
+                        raise ValueError("Bot is stopping; retry after restart")
+                    task = asyncio.current_task()
+                    self._command_tasks.add(task)
+                    try:
+                        return await func(*args, **kwargs)
+                    finally:
+                        self._command_tasks.discard(task)
+                tracked = app_commands.checks.has_permissions(manage_guild=True)(tracked)
+                tracked = app_commands.default_permissions(manage_guild=True)(tracked)
+                return self.tree.command(name=name, description=description, guild=self.scope)(tracked)
             return decorate
 
         @admin_command("subscribe", "Subscribe to new videos · Подписаться на новые видео")
@@ -181,17 +221,24 @@ class VideoBot(discord.Client):
             await interaction.response.defer(ephemeral=True)
             # Background work can exceed the interaction token lifetime for many subscriptions.
             await interaction.followup.send(self.text("checking"), ephemeral=True)
-            await self.notifier.poll()
+            await self.poll_once()
 
         @admin_command("status", "Show bot status · Состояние бота")
         async def status(interaction: discord.Interaction):
-            sources = self.store.all()
+            try:
+                sources = self.store.all()
+                pending = self.store.pending_count()
+            except sqlite3.Error:
+                await interaction.response.send_message(self.text("poll_error"), ephemeral=True)
+                return
             limits = sum(bool(self.providers.windows.get((s.kind, s.source))) for s in sources)
             health = self.text("working") if self.poll_loop.is_running() else self.text("stopped")
+            if self.poll_error:
+                health = self.text("poll_error")
             await interaction.response.send_message(
                 f"{health}\n{self.text('sources')}: {len(sources)}\n"
                 f"{self.text('failed')}: {len(self.notifier.failures)}\n"
-                f"{self.text('pending')}: {self.store.pending_count()}\n"
+                f"{self.text('pending')}: {pending}\n"
                 f"{self.text('window')}: {limits}\n"
                 f"Voice: {voice_count(interaction.guild, self.config.exclude_afk)}\n"
                 f"Banner: enabled={self.config.banner_enabled}, blocked={self.banner_blocked}", ephemeral=True)
@@ -222,16 +269,33 @@ class VideoBot(discord.Client):
                 await interaction.response.send_message(message, ephemeral=True)
 
 
+async def run_bot(config):
+    stopped = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGTERM, stopped.set)
+    try:
+        connector = aiohttp.TCPConnector(ssl=tls_context())
+        async with VideoBot(config, connector=connector) as bot:
+            login = asyncio.create_task(bot.start(config.token))
+            termination = asyncio.create_task(stopped.wait())
+            try:
+                done, _ = await asyncio.wait({login, termination}, return_when=asyncio.FIRST_COMPLETED)
+                if login in done:
+                    await login  # Propagate login errors rather than hanging on the signal waiter.
+            finally:
+                login.cancel()
+                termination.cancel()
+                await asyncio.gather(login, termination, return_exceptions=True)
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     config = Config.load()
-    async def run():
-        connector = aiohttp.TCPConnector(ssl=tls_context())
-        async with VideoBot(config, connector=connector) as bot:
-            await bot.start(config.token)
 
     try:
-        asyncio.run(run())
+        asyncio.run(run_bot(config))
     except KeyboardInterrupt:
         pass
 
